@@ -96,7 +96,7 @@ local_mcp_fun:
 # 选择使用的模块
 selected_module:
   ASR: DoubaoASR
-  TTS: EdgeTTS
+  TTS: DoubaoTTS
   LLM: OllamaLLM
   VLLLM: ChatGLMVLLM
 
@@ -106,8 +106,8 @@ ASR:
     # 火山 流式语音识别大模型-小时版， https://console.volcengine.com/ark/region:ark+cn-beijing/tts/speechRecognition
     # 开通功能，有20小时免费额度
     type: doubao
-    appid: "你的appid"
-    access_token: 你的access_token
+    appid: "8833371206"
+    access_token: "-1yBtIJ3p6l3ApQC6zZhhH_ZEkaPV5o-"
     output_dir: tmp/
     end_window_size: 300  # 结束窗口大小，单位毫秒，默认400ms，最小200ms
 
@@ -202,9 +202,9 @@ TTS:
     type: doubao
     voice: zh_female_wanwanxiaohe_moon_bigtts # 湾湾小何
     output_dir: "tmp/"
-    appid: "你的appid"
-    token: 你的access_token
-    cluster: 你的cluster
+    appid: "8833371206"
+    token: "-1yBtIJ3p6l3ApQC6zZhhH_ZEkaPV5o-"
+    cluster: "volcano_tts"
   GoSherpaTTS:
     type: gosherpa
     cluster: "ws://127.0.0.1:8848/tts"

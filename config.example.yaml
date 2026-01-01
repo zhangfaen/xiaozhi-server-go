@@ -1,0 +1,165 @@
+# =============================================================================
+# 小智服务器配置示例 - Mac 本地运行
+# =============================================================================
+# 使用说明:
+#   1. 复制此文件为 .config.yaml
+#   2. 根据需要修改配置
+#   3. 运行 ./run_on_mac.sh 启动
+# =============================================================================
+
+# 服务器基础配置
+server:
+  ip: 0.0.0.0
+  port: 8000
+  token: ""  # 可留空
+
+  auth:
+    enabled: false  # 本地测试不需要认证
+    store:
+      type: memory
+      expiry: 24
+
+# 传输层配置
+transport:
+  websocket:
+    enabled: true
+    ip: "0.0.0.0"
+    port: 8000
+
+# Web界面配置
+web:
+  enabled: true
+  port: 8080
+  # 注意: 启动后会自动获取本机IP,这里不需要手动配置
+  # websocket 和 vision URL 会自动更新
+
+log:
+  log_level: DEBUG  # DEBUG 方便排查问题
+  log_dir: logs
+  log_file: "server.log"
+
+# 提示词配置 (AI人格)
+prompt: |
+  你是小智,一个友好的AI助手。
+  回答简洁明了,不要长篇大论。
+
+# 对话角色
+roles:
+  - name: "默认助手"
+    description: "你是一个友好的AI助手,可以帮助用户解答问题、聊天交流。"
+    enabled: true
+
+# 音频处理设置
+delete_audio: true
+quick_reply: true
+quick_reply_words:
+  - "我在"
+  - "在呢"
+  - "来了"
+  - "啥事啊"
+
+# 本地 MCP 函数
+local_mcp_fun:
+  - name: "time"
+    description: "获取当前系统时间"
+    enabled: true
+  - name: "exit"
+    description: "识别退出意图"
+    enabled: true
+
+# =============================================================================
+# 选择使用的模块 (根据你的需求修改)
+# =============================================================================
+# 推荐配置:
+#   - 本地测试: OllamaLLM + EdgeTTS
+#   - 云端测试: ChatGLMLLM (免费) + EdgeTTS
+# =============================================================================
+
+selected_module:
+  ASR: DoubaoASR    # 火山引擎语音识别 (有免费额度)
+  TTS: EdgeTTS      # 微软免费语音 (推荐)
+  LLM: ChatGLMLLM   # 智谱免费模型 (推荐)
+  # VLLLM 可选,需要 api_key
+
+# =============================================================================
+# ASR 配置
+# =============================================================================
+ASR:
+  # 方案1: 火山引擎 (推荐,有免费额度)
+  DoubaoASR:
+    type: doubao
+    appid: ""        # 填入你的 appid
+    access_token: "" # 填入你的 access_token
+    output_dir: tmp/
+    end_window_size: 300
+
+  # 方案2: Deepgram (需要 api_key)
+  DeepgramSST:
+    type: deepgram
+    addr: "wss://api.deepgram.com/v1/listen"
+    api_key: ""      # 填入你的 api_key
+    lang: "zh-CN"
+    output_dir: tmp/
+
+# =============================================================================
+# TTS 配置
+# =============================================================================
+TTS:
+  # 方案1: EdgeTTS (免费,微软)
+  EdgeTTS:
+    type: edge
+    voice: zh-CN-XiaoxiaoNeural  # 女声(晓晓)
+    # 可选音色:
+    #   zh-CN-XiaoxiaoNeural - 晓晓(女)
+    #   zh-CN-XiaoyiNeural   - 晓伊(女)
+    #   zh-CN-YunjianNeural  - 云健(男)
+    #   zh-CN-YunxiNeural    - 云希(男)
+    output_dir: "tmp/"
+
+# =============================================================================
+# LLM 配置
+# =============================================================================
+LLM:
+  # 方案1: 智谱 AI (推荐,有免费额度)
+  ChatGLMLLM:
+    type: openai
+    model_name: glm-4-flash  # 免费模型
+    url: https://open.bigmodel.cn/api/paas/v4/
+    api_key: ""  # 填入你的 api_key (https://bigmodel.cn/usercenter/proj-mgmt/apikeys)
+
+  # 方案2: Ollama (本地,不需要 api_key)
+  OllamaLLM:
+    type: ollama
+    model_name: qwen3  # 需要先: ollama pull qwen3
+    url: http://localhost:11434
+
+  # 方案3: 火山引擎豆包
+  DoubaoLLM:
+    type: doubao
+    model_name: doubao-seed-1.6-251015
+    url: https://ark.cn-beijing.volces.com/api/v3
+    api_key: ""  # 填入你的 api_key
+    thinking: disabled
+    max_tokens: 4000
+
+# =============================================================================
+# 退出指令
+# =============================================================================
+CMD_exit:
+  - "退出"
+  - "关闭"
+  - "拜拜"
+
+# =============================================================================
+# 连接池配置 (默认即可)
+# =============================================================================
+pool_config:
+  pool_min_size: 5
+  pool_max_size: 20
+  pool_refill_size: 3
+  pool_check_interval: 30
+mcp_pool_config:
+  pool_min_size: 5
+  pool_max_size: 20
+  pool_refill_size: 3
+  pool_check_interval: 30
