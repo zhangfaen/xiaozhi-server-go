@@ -170,6 +170,9 @@ func (h *ConnectionHandler) handleListenMessage(msgMap map[string]interface{}) e
 
 	switch state {
 	case "start":
+		// 用户开始说话，打断当前 LLM 生成
+		h.StopLLMResponse()
+
 		if h.client_asr_text != "" && h.clientListenMode == "manual" {
 			h.clientAbortChat()
 		}

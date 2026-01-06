@@ -150,6 +150,8 @@ type ConnectionHandler struct {
 
 	mcpResultHandlers map[string]MCPResultHandler // MCP处理器映射
 	ctx               context.Context
+	llmCancelFunc     context.CancelFunc // 用于取消 LLM 生成
+	llmCancelMu       sync.Mutex         // 保护 llmCancelFunc 的互斥锁
 }
 
 // NewConnectionHandler 创建新的连接处理器
@@ -771,6 +773,10 @@ func (h *ConnectionHandler) genResponseByLLM(ctx context.Context, messages []pro
 			h.tts_last_text_index = 1 // 重置文本索引
 			h.SpeakAndPlay(errorMsg, 1, round)
 		}
+		// 生成完成后清除 cancelFunc
+		h.llmCancelMu.Lock()
+		h.llmCancelFunc = nil
+		h.llmCancelMu.Unlock()
 	}()
 
 	llmStartTime := time.Now()
@@ -779,9 +785,16 @@ func (h *ConnectionHandler) genResponseByLLM(ctx context.Context, messages []pro
 		_ = msg
 		//msg.Print()
 	}
+
+	// 创建可取消的上下文
+	llmCtx, cancel := context.WithCancel(ctx)
+	h.llmCancelMu.Lock()
+	h.llmCancelFunc = cancel
+	h.llmCancelMu.Unlock()
+
 	// 使用LLM生成回复
 	tools := h.functionRegister.GetAllFunctions()
-	responses, err := h.providers.llm.ResponseWithFunctions(ctx, h.sessionID, messages, tools)
+	responses, err := h.providers.llm.ResponseWithFunctions(llmCtx, h.sessionID, messages, tools)
 	if err != nil {
 		return fmt.Errorf("LLM生成回复失败: %v", err)
 	}
@@ -1070,6 +1083,17 @@ func (h *ConnectionHandler) stopServerSpeak() {
 	h.cleanTTSAndAudioQueue(false)
 }
 
+// StopLLMResponse 停止 LLM 响应生成（用于打断场景）
+func (h *ConnectionHandler) StopLLMResponse() {
+	h.llmCancelMu.Lock()
+	if h.llmCancelFunc != nil {
+		h.LogInfo("[服务端] [LLM] 停止响应生成")
+		h.llmCancelFunc()
+		h.llmCancelFunc = nil
+	}
+	h.llmCancelMu.Unlock()
+}
+
 func (h *ConnectionHandler) deleteAudioFileIfNeeded(filepath string, reason string) {
 	if !h.config.DeleteAudio || filepath == "" {
 		return
@@ -1089,7 +1113,12 @@ func (h *ConnectionHandler) deleteAudioFileIfNeeded(filepath string, reason stri
 
 	// 删除非缓存音频文件
 	if err := os.Remove(filepath); err != nil {
-		h.LogError(fmt.Sprintf(reason+" 删除音频文件失败: %v", err))
+		if os.IsNotExist(err) {
+			// 文件不存在是正常情况，不记录错误
+			h.logger.Debug(fmt.Sprintf(reason+" 音频文件已不存在: %s", filepath))
+		} else {
+			h.LogError(fmt.Sprintf(reason+" 删除音频文件失败: %v", err))
+		}
 	} else {
 		h.logger.Debug(fmt.Sprintf(reason+" 已删除音频文件: %s", filepath))
 	}

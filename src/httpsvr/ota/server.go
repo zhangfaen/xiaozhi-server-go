@@ -18,6 +18,8 @@ func NewDefaultOTAService(updateURL string) *DefaultOTAService {
 // Start 注册 OTA 相关路由
 func (s *DefaultOTAService) Start(ctx context.Context, engine *gin.Engine, apiGroup *gin.RouterGroup) error {
 
+	// 支持带斜杠和不带斜杠的两种路径
+	apiGroup.Any("/ota", s.HandleOTARequest())
 	apiGroup.Any("/ota/", s.HandleOTARequest())
 
 	apiGroup.GET("/ota_bin/*filepath", s.HandleFirmwareDownload())
