@@ -653,6 +653,8 @@ func (p *Provider) closeConnection() {
 		}
 	}()
 
+	// 注意：此方法由持有 connMutex 的调用者调用，无需再加锁
+	// 避免与 Reset() 等方法产生死锁
 	if p.conn != nil {
 		// 不发送关闭消息，直接关闭连接
 		_ = p.conn.Close()
@@ -683,8 +685,13 @@ func (p *Provider) sendAudioData(data []byte, isLast bool) error {
 		}
 	}()
 
+	// 使用互斥锁保护连接状态的检查和获取
+	p.connMutex.Lock()
+	conn := p.conn
+	p.connMutex.Unlock()
+
 	// 检查连接是否存在
-	if p.conn == nil {
+	if conn == nil {
 		return fmt.Errorf("WebSocket连接不存在")
 	}
 
@@ -708,7 +715,8 @@ func (p *Provider) sendAudioData(data []byte, isLast bool) error {
 	audioMessage := append(header, size...)
 	audioMessage = append(audioMessage, compressedAudio...)
 
-	if err := p.conn.WriteMessage(websocket.BinaryMessage, audioMessage); err != nil {
+	// 使用局部变量 conn 发送数据，避免竞态条件
+	if err := conn.WriteMessage(websocket.BinaryMessage, audioMessage); err != nil {
 		return fmt.Errorf("发送音频数据失败: %v", err)
 	}
 

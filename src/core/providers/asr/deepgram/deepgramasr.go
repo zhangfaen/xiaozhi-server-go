@@ -358,6 +358,8 @@ func (p *Provider) closeConnection() {
 		}
 	}()
 
+	// Note: This method is called by callers holding connMutex, no need to lock again
+	// to avoid deadlock with Reset() and other methods
 	if p.conn != nil {
 		_ = p.conn.Close()
 		p.conn = nil
@@ -376,11 +378,16 @@ func (p *Provider) sendAudioData(data []byte, isLast bool) error {
 		}
 	}()
 
-	if p.conn == nil {
+	// Use mutex to protect connection state check and acquisition
+	p.connMutex.Lock()
+	conn := p.conn
+	p.connMutex.Unlock()
+
+	if conn == nil {
 		return fmt.Errorf("WebSocket connection not established")
 	}
 
-	if err := p.conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+	if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
 		return fmt.Errorf("failed to send audio data: %v", err)
 	}
 

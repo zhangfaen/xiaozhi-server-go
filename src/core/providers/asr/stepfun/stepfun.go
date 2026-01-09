@@ -327,6 +327,8 @@ func (p *Provider) closeConnection() {
 			p.logger.Error("关闭连接时发生错误: %v", r)
 		}
 	}()
+	// 注意：此方法由持有 connMutex 的调用者调用，无需再加锁
+	// 避免与 Reset() 等方法产生死锁
 	if p.conn != nil {
 		_ = p.conn.Close()
 		p.conn = nil
