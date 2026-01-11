@@ -26,6 +26,51 @@ main.go.StartTransportServer()
   → ConnectionHandler.Handle(conn)
 ```
 
+### 一个客户端连接后的信息流故事
+
+想象一下，用户对着玩具说："今天天气怎么样？"
+
+1. **连接建立**
+   - 用户设备通过 WebSocket 连接到服务器
+   - 服务器从请求头中读取 `Device-Id` 和 `Client-Id`，为此次连接创建唯一的 `sessionID`
+   - 从 Provider 池中获取一组 Provider（ASR/LLM/TTS），绑定到此 ConnectionHandler
+
+2. **音频接收与识别**
+   - 客户端发送 Opus 编码的音频数据
+   - `handleListenMessage()` 接收音频，通过 `opusDecoder` 解码
+   - 解码后的音频发送给 ASR Provider 进行语音识别
+   - ASR 通过回调将识别结果（文本）返回给 ConnectionHandler
+
+3. **对话历史记录**
+   - ASR 返回的文本作为用户消息，存入 `dialogueManager`
+   - 此时对话历史：`[{role: "user", content: "今天天气怎么样？"}]`
+
+4. **LLM 推理**
+   - `genResponseByLLM()` 从 `dialogueManager` 获取完整对话历史
+   - 将历史消息发送给 LLM Provider
+   - LLM 根据上下文理解意图，生成回复文本："今天天气晴朗，25度..."
+
+5. **语音合成**
+   - LLM 的文本回复存入对话历史
+   - 文本发送给 TTS Provider，合成语音
+   - 语音数据通过 WebSocket 发送给客户端，客户端播放
+
+6. **多轮对话延续**
+   - 用户再次提问："那明天呢？"
+   - 重复步骤 2-5，此时对话历史已包含：
+     ```
+     [{role: "user", content: "今天天气怎么样？"},
+      {role: "assistant", content: "今天天气晴朗，25度..."},
+      {role: "user", content: "那明天呢？"}]
+     ```
+   - LLM 根据完整的上下文，理解"明天"指代"明天的天气"
+
+**关键设计点**：
+- 每个连接有独立的 `ConnectionHandler`，持有自己的 `dialogueManager`
+- 对话历史在内存中管理，每个请求发送给 LLM 时传递完整历史
+- Provider 从池中获取，连接结束后归还池中复用
+- 无状态的 Provider + 有状态的 ConnectionHandler，既保证了资源复用，又支持多轮对话
+
 ### ConnectionHandler 结构 (`connection.go:68-155`)
 
 > **说明**：以下为核心字段简化版，实际还有 `authManager`、`taskMgr`、`mcpManager`、`functionRegister`、`opusDecoder` 等字段。
