@@ -16,49 +16,69 @@ clientID := r.Header.Get("Client-Id")
 ```
 
 ## 连接生命周期
-
 ```
-main.go → StartTransportServer()
+main.go.StartTransportServer()
+  → TransportManager.StartAll()
   → WebSocketTransport.Start()
   → handleWebSocket()
-  → ConnectionContextAdapter.Handle()
-  → ConnectionHandler.Handle()
+  → DefaultConnectionHandlerFactory.CreateHandler()
+  → ConnectionContextAdapter.Handle(conn)
+  → ConnectionHandler.Handle(conn)
 ```
 
-### ConnectionHandler 结构 (`connection.go:90-94`)
+### ConnectionHandler 结构 (`connection.go:68-155`)
+
+> **说明**：以下为核心字段简化版，实际还有 `authManager`、`taskMgr`、`mcpManager`、`functionRegister`、`opusDecoder` 等字段。
+
 ```go
 type ConnectionHandler struct {
+    // 标识相关
     sessionID     string  // 服务端会话ID
     deviceID      string  // 设备ID
     clientId      string  // 客户端ID
     transportType string  // 传输类型
-    dialogueManager *dialogue.Manager  // 对话历史管理
-    providers *pool.ProviderSet  // Provider 池（复用）
-}
-```
 
-## 消息处理 (`connection.go:77-100`)
+    // 核心组件
+    dialogueManager *dialogue.Manager  // 对话历史管理
+    providers       ProviderSet        // Provider 池（嵌套结构体：asr/llm/tts/vlllm）
+    mcpManager     *mcp.Manager       // MCP 工具管理器
+    functionRegister *function.FunctionRegistry  // 函数注册表
+
+    // 音频相关
+    opusDecoder *opus.Decoder  // Opus 解码器
+    clientAudioFormat    string  // 客户端音频格式
+    clientAudioSampleRate int    // 客户端采样率
+
+    // 会话相关
+    headers     http.Header     // 请求头
+    agentID     string          // Agent ID
+    enabledTools []string       // 启用的工具列表
+}
+
+## 消息处理 (`connection_handlemsg.go:15-100`)
 
 | 消息类型 | 处理函数 | 说明 |
 |----------|----------|------|
-| `hello` | `handleHello()` | 初始化音频参数 |
-| `chat` | `handleChat()` | 文本聊天 |
-| `listen` | `handleListen()` | 语音识别控制 |
-| `image` | `handleImage()` | 图片消息 |
-| `mcp` | `handleMCP()` | MCP 工具调用 |
-| `abort` | `handleAbort()` | 中断当前对话 |
+| `hello` | `handleHelloMessage()` | 初始化音频参数 |
+| `chat` | `handleChatMessage()` | 文本聊天 |
+| `listen` | `handleListenMessage()` | 语音识别控制 |
+| `image` | `handleImageMessage()` | 图片消息 |
+| `mcp` | `handleMCPResultCall()` | MCP 工具调用 |
+| `abort` | `clientAbortChat()` | 中断当前对话 |
 
 ## Provider 调用方式
 
-**Provider 是池化的、无状态的**，每个连接从池中获取独立的 ProviderSet。
+**Provider 是池化的、无状态的**，每个连接从池中获取独立的 `ProviderSet`（嵌套结构体）。
 
-| Provider | 调用方式 | 关联方式 |
-|----------|----------|----------|
-| LLM | `h.providers.llm.ResponseWithFunctions(ctx, sessionID, messages, tools)` | 通过 sessionID 关联 |
-| ASR | `h.providers.asr.AddAudio()` / `SetListener(h)` | 回调绑定到 ConnectionHandler |
+| Provider | 调用方式 | 说明 |
+|----------|----------|------|
+| LLM | `h.providers.llm.ResponseWithFunctions(ctx, sessionID, messages, tools)` | 无状态，通过 sessionID 关联 |
+| ASR | `h.providers.asr.AddAudio()` + `SetListener(h)` | 需要设置回调绑定到 ConnectionHandler |
 | TTS | `h.providers.tts.ToTTS(text)` | 无状态调用 |
+| VLLLM | `h.providers.vlllm.ResponseWithImage()` | 图片理解，可降级到普通 LLM |
+| MCP | `h.mcpManager.ExecuteTool(ctx, toolName, args)` | 工具调用 |
 
-### 对话历史管理 (`connection.go:760-765`)
+### 对话历史管理 (`connection.go:759-765`)
 ```go
 // 用户消息添加到历史
 h.dialogueManager.Put(chat.Message{Role: "user", Content: text})
@@ -79,8 +99,15 @@ h.genResponseByLLM(ctx, h.dialogueManager.GetLLMDialogue(), round)
 
 ### 当前日志格式
 ```
-[2026-01-10 12:00:00.000] [INFO] 消息内容 {key=value}
+[2026-01-10 12:00:00.000] [INFO] [source:行号] 消息内容 {key=value}
 ```
+
+**实际输出示例**：
+```
+[2026-01-11 10:30:45.123] [INFO] [transport.go:128] [WebSocket] [连接建立 abc123] 资源已分配 {device=dev1}
+```
+
+> 日志格式包含 `[source:行号]` 组件，用于定位日志输出位置。
 
 ### 专用日志方法
 ```go
