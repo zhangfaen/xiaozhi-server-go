@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -103,26 +104,40 @@ func (h *CustomTextHandler) Handle(ctx context.Context, r slog.Record) error {
 		isStageLog = true
 	}
 
+	// 提取 source 属性（文件名:行号）
+	var source string
+	attrsFunc := func(a slog.Attr) bool {
+		if a.Key == "source" {
+			source = a.Value.String()
+		}
+		return true
+	}
+	r.Attrs(attrsFunc)
+
 	// 构建输出
 	var output string
 	if isStageLog {
-		// 阶段日志格式: [时间] [阶段] 消息
-		output = fmt.Sprintf("%s[%s]%s %s%s%s",
+		// 阶段日志格式: [时间] [阶段] [source] 消息
+		output = fmt.Sprintf("%s[%s]%s %s%s%s %s[%s]%s",
 			colorTime, timeStr, colorReset,
-			stageColor, msg, colorReset)
+			stageColor, msg, colorReset,
+			colorTime, source, colorReset)
 	} else {
-		// 普通日志格式: [时间] [级别] 消息
-		output = fmt.Sprintf("%s[%s]%s %s[%s]%s %s",
+		// 普通日志格式: [时间] [级别] [source] 消息
+		output = fmt.Sprintf("%s[%s]%s %s[%s]%s %s[%s]%s %s",
 			colorTime, timeStr, colorReset,
 			levelColor, levelStr, colorReset,
+			colorTime, source, colorReset,
 			msg)
 	}
 
-	// 添加属性（如果有）
+	// 添加其他属性（排除 source）
 	if r.NumAttrs() > 0 {
 		output += " {"
 		r.Attrs(func(a slog.Attr) bool {
-			output += fmt.Sprintf(" %s=%v", a.Key, a.Value)
+			if a.Key != "source" {
+				output += fmt.Sprintf(" %s=%v", a.Key, a.Value)
+			}
 			return true
 		})
 		output += " }"
@@ -362,10 +377,19 @@ func (l *Logger) log(level slog.Level, msg string, fields ...interface{}) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
-	// 构建slog属性
-	var attrs []slog.Attr
+	// 获取调用方信息（跳过 runtime.Callers + log + Debug/Info/Warn/Error）
+	pcs := make([]uintptr, 3)
+	runtime.Callers(3, pcs)
+	frames := runtime.CallersFrames(pcs)
+	frame, _ := frames.Next()
+
+	// 构建 source 属性
+	source := fmt.Sprintf("%s:%d", filepath.Base(frame.File), frame.Line)
+
+	// 构建 slog 属性
+	attrs := []slog.Attr{slog.String("source", source)}
 	if len(fields) > 0 && fields[0] != nil {
-		// 处理fields参数
+		// 处理 fields 参数
 		if fieldsMap, ok := fields[0].(map[string]interface{}); ok {
 			// 提取并排序键
 			keys := make([]string, 0, len(fieldsMap))
@@ -379,7 +403,7 @@ func (l *Logger) log(level slog.Level, msg string, fields ...interface{}) {
 				attrs = append(attrs, slog.Any(k, fieldsMap[k]))
 			}
 		} else {
-			// 如果不是map，直接作为fields字段
+			// 如果不是 map，直接作为 fields 字段
 			attrs = append(attrs, slog.Any("fields", fields[0]))
 		}
 	}
