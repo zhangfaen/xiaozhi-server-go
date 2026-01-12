@@ -75,14 +75,6 @@ if [ ! -f config.yaml ]; then
 fi
 echo -e "${GREEN}  config.yaml 存在${NC}"
 
-# 检查是否有 .config.yaml (用户配置)
-if [ -f .config.yaml ]; then
-    echo -e "${GREEN}  .config.yaml 存在,优先使用用户配置${NC}"
-else
-    echo -e "${YELLOW}  警告: 未找到 .config.yaml,使用默认 config.yaml${NC}"
-    echo -e "${YELLOW}  建议创建 .config.yaml 并配置 API Key${NC}"
-fi
-
 # 删除数据库，确保每次从 config.yaml 加载最新配置
 if [ -f config.db ]; then
     echo -e "${YELLOW}  删除旧数据库 config.db (确保从 config.yaml 加载)${NC}"
@@ -161,9 +153,6 @@ fi
 
 echo -e "${GREEN}  本机 IP: $LOCAL_IP${NC}"
 echo ""
-
-# 保存 PID
-echo $$ > "$PID_FILE"
 
 # 启动服务
 exec ./xiaozhi-server \
