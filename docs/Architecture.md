@@ -12,7 +12,9 @@
 ```go
 deviceID := r.Header.Get("Device-Id")
 clientID := r.Header.Get("Client-Id")
-// 如果没有提供，使用 conn 的内存地址作为 fallback
+// 如果请求头没有提供，尝试从 URL query 参数获取
+// device-id, client-id
+// 如果仍然没有，clientID 使用 conn 的内存地址作为 fallback
 ```
 
 ## 连接生命周期
@@ -25,6 +27,8 @@ main.go.StartTransportServer()
   → ConnectionContextAdapter.Handle(conn)
   → ConnectionHandler.Handle(conn)
 ```
+
+> **注意**: `ConnectionContextAdapter` 是连接适配层，负责将 `WebSocketConnection` 转换为统一的 `Connection` 接口。
 
 ### 一个客户端连接后的信息流故事
 
@@ -102,14 +106,272 @@ type ConnectionHandler struct {
 
 ## 消息处理 (`connection_handlemsg.go:15-100`)
 
-| 消息类型 | 处理函数 | 说明 |
-|----------|----------|------|
-| `hello` | `handleHelloMessage()` | 初始化音频参数 |
+### WebSocket 消息帧类型
+
+| messageType | 方向 | 内容格式 | 用途 |
+|-------------|------|----------|------|
+| **1** | 双向 | JSON 文本 | 指令消息、控制信令 |
+| **2** | 双向 | 二进制数据 | 音频数据流（PCM/Opus） |
+
+**关键设计**：利用 WebSocket 协议帧头自带的 messageType 区分数据类型，而非在 payload 中额外标记。
+
+### 客户端 → 服务端 文本指令 (`type` 字段)
+
+| type | 处理函数 | 用途 |
+|------|----------|------|
+| `hello` | `handleHelloMessage()` | 建立连接时上报客户端音频参数（format/sample_rate/channels/frame_duration） |
 | `chat` | `handleChatMessage()` | 文本聊天 |
-| `listen` | `handleListenMessage()` | 语音识别控制 |
-| `image` | `handleImageMessage()` | 图片消息 |
-| `mcp` | `handleMCPResultCall()` | MCP 工具调用 |
-| `abort` | `clientAbortChat()` | 中断当前对话 |
+| `listen` | `handleListenMessage()` | 语音识别控制（start/stop/detect） |
+| `abort` | `clientAbortChat()` | 打断当前对话/语音 |
+| `image` | `handleImageMessage()` | 图片消息（携带 url 或 base64 数据） |
+| `vision` | `handleVisionMessage()` | 视觉能力控制（gen_pic/gen_video/read_img） |
+| `iot` | `handleIotMessage()` | 物联网设备状态同步（descriptors/states） |
+| `mcp` | `mcpManager.HandleXiaoZhiMCPMessage()` | MCP 协议工具调用 |
+
+### listen 子指令 (`state` 字段)
+
+| state | 用途 |
+|-------|------|
+| `start` | 开始拾音（用户开始说话，可打断当前 LLM 生成） |
+| `stop` | 停止拾音（发送空数据标记 ASR 识别结束） |
+| `detect` | 检测消息（可携带 `text` 参数） |
+
+#### listen `mode` 参数（**重要**）
+
+客户端可以通过 `mode` 参数指定三种不同的拾音模式：
+
+| mode | 触发时机 | 是否打断语音 | 文本累积 | 典型场景 |
+|------|----------|-------------|----------|----------|
+| `auto` | ASR 返回任意结果 | 不打断 | 不累积 | 智能音箱 |
+| `manual` | 用户主动 stop 或 ASR 返回最终结果 | 不打断 | **累积** | 按键录音设备 |
+| `realtime` | ASR 返回任意结果 | **立即打断** | 不累积 | 可打断的对话机器人 |
+
+**三种模式的行为示例**：
+
+```json
+// auto 模式：用户说"今天"，AI 就开始回答
+{"type":"listen", "state":"start", "mode":"auto"}
+
+// manual 模式：用户说完一整句后，AI 才回答
+{"type":"listen", "state":"start", "mode":"manual"}
+// 用户按住录音键说话...
+{"type":"listen", "state":"stop"}
+
+// realtime 模式：用户随时可以打断 AI 说话
+{"type":"listen", "state":"start", "mode":"realtime"}
+// 如果用户中途说话，立即打断当前播放并处理新内容
+```
+
+> **注意**: `mode` 字段默认为 `auto`。
+
+### vision 子指令 (`cmd` 字段)
+
+| cmd | 用途 |
+|-----|------|
+| `gen_pic` | 生成图片 |
+| `gen_video` | 生成视频 |
+| `read_img` | 读取/分析图片 |
+
+### MCP 消息 (`type: mcp`)
+
+MCP（Model Context Protocol）消息用于工具调用，封装了 JSON-RPC 2.0 协议。
+
+**消息结构**：
+
+```json
+{
+  "type": "mcp",
+  "session_id": "abc123",
+  "payload": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize | tools/list | tools/call",
+    "params": { ... }
+  }
+}
+```
+
+#### 常见 method
+
+| method | 用途 | 方向 |
+|--------|------|------|
+| `initialize` | MCP 初始化协商 | 客户端 → 服务端 |
+| `tools/list` | 获取可用工具列表 | 客户端 → 服务端 |
+| `tools/call` | 调用工具 | 客户端 → 服务端 |
+| `notifications/*` | 通知事件 | 双向 |
+
+#### tools/call 请求示例
+
+```json
+{
+  "type": "mcp",
+  "session_id": "abc123",
+  "payload": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "tools/call",
+    "params": {
+      "name": "get_weather",
+      "arguments": {"city": "北京"}
+    }
+  }
+}
+```
+
+#### 响应示例
+
+```json
+{
+  "type": "mcp",
+  "session_id": "abc123",
+  "payload": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "北京今天天气晴朗，25度"
+        }
+      ],
+      "isError": false
+    }
+  }
+}
+```
+
+### 服务端 → 客户端 文本消息 (`type` 字段)
+
+| type | 用途 |
+|------|------|
+| `hello` | 响应客户端，携带 `session_id` 和服务端音频参数 |
+| `stt` | ASR 语音识别结果 |
+| `tts` | TTS 状态通知（`start`/`sentence_start`/`sentence_end`/`stop`） |
+| `llm` | LLM 响应文本（带 `emotion` 情绪标签） |
+
+#### `hello` 响应消息
+
+```json
+{
+  "type": "hello",
+  "version": 1,
+  "transport": "websocket",
+  "session_id": "abc123",
+  "audio_params": {
+    "format": "opus",
+    "sample_rate": 24000,
+    "channels": 1,
+    "frame_duration": 60,
+    "audio_codec": "opus"
+  }
+}
+```
+
+> **关键字段**：`audio_codec` 表示服务端返回音频使用的编码格式（`opus` 或 `pcm`），客户端需据此解码。
+
+#### `tts` 状态消息（完整状态流）
+
+| state | 触发时机 | 说明 |
+|-------|----------|------|
+| `start` | 开始 TTS 合成 | 服务端开始生成语音 |
+| `sentence_start` | 开始发送音频帧 | 即将发送音频数据（type=2） |
+| `sentence_end` | 结束发送音频帧 | 当前句子音频发送完成 |
+| `stop` | 全部完成 | 所有音频发送完毕，对话结束 |
+
+```json
+// 开始合成
+{"type": "tts", "state": "start", "session_id": "abc123", "text": "", "index": 0, "audio_codec": "opus"}
+
+// 开始发送音频帧
+{"type": "tts", "state": "sentence_start", "session_id": "abc123", "text": "今天天气晴朗", "index": 1, "audio_codec": "opus"}
+
+// ... 客户端接收音频帧 (type=2) ...
+
+// 结束发送音频帧
+{"type": "tts", "state": "sentence_end", "session_id": "abc123", "text": "今天天气晴朗", "index": 1, "audio_codec": "opus"}
+
+// 全部完成
+{"type": "tts", "state": "stop", "session_id": "abc123", "text": "", "index": 1, "audio_codec": "opus"}
+```
+
+#### `llm` 情绪消息
+
+```json
+{"type": "llm", "text": "👀", "emotion": "thinking", "session_id": "abc123"}
+```
+
+**支持的 `emotion` 枚举值**：
+
+| emotion | 表情 | 含义 |
+|---------|------|------|
+| `neutral` | 😐 | 中性 |
+| `happy` | 😊 | 开心 |
+| `laughing` | 😂 | 大笑 |
+| `funny` | 🤡 | 有趣 |
+| `sad` | 😢 | 悲伤 |
+| `angry` | 😠 | 生气 |
+| `crying` | 😭 | 哭泣 |
+| `loving` | 🥰 | 喜爱 |
+| `embarrassed` | 😳 | 尴尬 |
+| `surprised` | 😮 | 惊讶 |
+| `shocked` | 😱 | 震惊 |
+| `thinking` | 🤔 | 思考中 |
+| `winking` | 😉 | 眨眼 |
+| `cool` | 😎 | 酷 |
+| `relaxed` | 😌 | 放松 |
+| `delicious` | 😋 | 美味 |
+| `kissy` | 😘 | 飞吻 |
+| `confident` | 😏 | 自信 |
+| `sleepy` | 😴 | 困倦 |
+| `silly` | 🤪 | 傻乎乎 |
+| `confused` | 😕 | 困惑 |
+
+### 消息处理流程
+
+```
+客户端 WebSocket 消息帧
+        │
+        ├── type=1 (TEXT=1) → clientTextQueue → processClientTextMessage()
+        │                                            │
+        │                                            └── 解析 JSON type 字段分发
+        │                                                hello/chat/listen/abort/image/...
+        │
+        └── type=2 (BINARY=2) → clientAudioQueue → 音频处理管道
+                                    │
+                                    └── opusDecoder 解码 (如果是 opus 格式)
+                                        → ASR Provider 语音识别
+```
+
+### 消息示例
+
+```json
+// 客户端 hello（必填）
+{"type":"hello","audio_params":{"format":"opus","sample_rate":24000,"channels":1,"frame_duration":60}}
+
+// 客户端 listen start
+{"type":"listen","state":"start","mode":"auto"}
+
+// 客户端 listen detect (纯文本检测)
+{"type":"listen","state":"detect","text":"今天天气怎么样"}
+
+// 客户端 image（使用 URL）
+{"type":"image","text":"这张图片里有什么","image_data":{"url":"http://...","format":"jpeg"}}
+
+// 客户端 image（使用 base64 数据）
+{"type":"image","text":"这张图片里有什么","image_data":{"data":"base64编码数据...","format":"jpeg"}}
+
+// 服务端 hello 响应
+{"type":"hello","version":1,"transport":"websocket","session_id":"abc123","audio_params":{"format":"opus",...}}
+
+// 服务端 stt
+{"type":"stt","text":"今天天气怎么样","session_id":"abc123"}
+
+// 服务端 tts 状态
+{"type":"tts","state":"sentence_start","session_id":"abc123","text":"今天天气晴朗","index":1,"audio_codec":"opus"}
+
+// 服务端 llm 响应
+{"type":"llm","text":"👀","emotion":"thinking","session_id":"abc123"}
+```
 
 ## Provider 调用方式
 
