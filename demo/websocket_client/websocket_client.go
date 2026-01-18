@@ -15,7 +15,7 @@ import (
 	opus "github.com/qrtc/opus-go"
 )
 
-// WebSocketClient WebSocket客户端
+// WebSocketClient WebSocket客户端,供外部调用
 type WebSocketClient struct {
 	conn          *websocket.Conn
 	opusDecoder   *opus.OpusDecoder
