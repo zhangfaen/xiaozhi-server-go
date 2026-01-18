@@ -20,7 +20,7 @@ type WebSocketClient struct {
 	conn          *websocket.Conn
 	opusDecoder   *opus.OpusDecoder
 	speakerFormat beep.Format
-	pemData       []byte // 用于存储接收的PEM数据，目的是积累一些数据再播放，避免播放不连续
+	dynamicStream *DynamicStreamer
 	mu            sync.Mutex
 	done          chan struct{}
 }
@@ -46,10 +46,13 @@ func NewWebSocketClient() *WebSocketClient {
 		Precision:   2, // 16位PCM
 	}
 
+	// 创建动态音频流
+	dynamicStream := NewDynamicStreamer(speakerFormat)
+
 	return &WebSocketClient{
 		opusDecoder:   decoder,
 		speakerFormat: speakerFormat,
-		pemData:       make([]byte, 0), // PCM数据缓冲区，可根据需要调整
+		dynamicStream: dynamicStream,
 		done:          make(chan struct{}),
 	}
 }
@@ -69,7 +72,7 @@ func (c *WebSocketClient) Connect(url string, deviceID, clientID string) error {
 	}
 
 	// 初始化扬声器
-	err = speaker.Init(c.speakerFormat.SampleRate, c.speakerFormat.SampleRate.N(time.Second/10))
+	err = speaker.Init(c.speakerFormat.SampleRate, c.speakerFormat.SampleRate.N(time.Second/50))
 	if err != nil {
 		return fmt.Errorf("初始化扬声器失败: %v", err)
 	}
@@ -79,6 +82,9 @@ func (c *WebSocketClient) Connect(url string, deviceID, clientID string) error {
 	if err != nil {
 		return fmt.Errorf("发送hello消息失败: %v", err)
 	}
+
+	// 启动持续播放
+	speaker.Play(c.dynamicStream)
 
 	return nil
 }
@@ -123,7 +129,6 @@ func (c *WebSocketClient) SendTextMessage(text string) error {
 
 // StartListening 开始监听服务器消息
 func (c *WebSocketClient) StartListening() {
-
 	defer func() {
 		c.Close()
 	}()
@@ -160,25 +165,6 @@ func (c *WebSocketClient) handleTextMessage(message []byte) {
 		log.Printf("解析文本消息失败: %v", err)
 		return
 	}
-
-	//msgType, ok := msgMap["type"].(string)
-	//if !ok {
-	//	log.Printf("文本消息缺少type字段: %s", string(message))
-	//	return
-	//}
-
-	//switch msgType {
-	//case "tts":
-	//	state, _ := msgMap["state"].(string)
-	//	text, _ := msgMap["text"].(string)
-	//	log.Printf("TTS状态: %s, 文本: %s", state, text)
-	//case "llm":
-	//	text, _ := msgMap["text"].(string)
-	//	emotion, _ := msgMap["emotion"].(string)
-	//	log.Printf("LLM响应: %s (情绪: %s)", text, emotion)
-	//default:
-	//	log.Printf("收到文本消息类型: %s", msgType)
-	//}
 }
 
 // handleBinaryMessage 处理二进制消息（音频数据）
@@ -189,11 +175,8 @@ func (c *WebSocketClient) handleBinaryMessage(message []byte) {
 		log.Printf("解码Opus数据失败: %v", err)
 		return
 	}
-	c.pemData = append(c.pemData, decodedData...)
-	if len(c.pemData) >= 48000 {
-		c.playPCMData(c.pemData)
-		c.pemData = make([]byte, 0)
-	}
+	// 立即将解码后的PCM数据添加到动态流
+	c.dynamicStream.AddData(decodedData)
 }
 
 // decodeOpusData 解码opus数据为PCM
@@ -214,64 +197,71 @@ func (c *WebSocketClient) decodeOpusData(opusData []byte) ([]byte, error) {
 	return outBuffer[:n], nil
 }
 
-// playPCMData 播放PCM数据
-func (c *WebSocketClient) playPCMData(pcmData []byte) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// 创建自定义Streamer来播放PCM数据
-	streamer := &PCMStreamer{
-		data:   pcmData,
-		offset: 0,
-		format: c.speakerFormat,
-	}
-
-	// 播放音频
-	done := make(chan struct{})
-	speaker.Play(beep.Seq(streamer, beep.Callback(func() {
-		close(done)
-	})))
-
-	// 等待播放完成
-	select {
-	case <-done:
-		// 播放完成
-	case <-time.After(5 * time.Second):
-		log.Println("音频播放超时")
-	}
+// DynamicStreamer 动态音频流实现，支持持续添加数据
+type DynamicStreamer struct {
+	format beep.Format
+	data   []byte
+	mu     sync.Mutex
+	cond   *sync.Cond
 }
 
-// PCMStreamer 自定义PCM流实现
-type PCMStreamer struct {
-	data   []byte
-	offset int
-	format beep.Format
+// NewDynamicStreamer 创建动态音频流
+func NewDynamicStreamer(format beep.Format) *DynamicStreamer {
+	ds := &DynamicStreamer{
+		format: format,
+		data:   make([]byte, 0),
+	}
+	ds.cond = sync.NewCond(&ds.mu)
+	return ds
+}
+
+// AddData 添加PCM数据到动态流
+func (ds *DynamicStreamer) AddData(pcmData []byte) {
+	if len(pcmData) == 0 {
+		return
+	}
+
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+
+	ds.data = append(ds.data, pcmData...)
+	ds.cond.Signal() // 通知等待的Stream方法有新数据
 }
 
 // Stream 实现beep.Streamer接口
-func (s *PCMStreamer) Stream(samples [][2]float64) (n int, ok bool) {
-	// 计算可以处理的样本数
-	available := len(s.data) - s.offset
-	if available <= 0 {
-		return 0, false
+func (ds *DynamicStreamer) Stream(samples [][2]float64) (n int, ok bool) {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+
+	bytesPerSample := ds.format.Precision * ds.format.NumChannels
+	totalBytesNeeded := len(samples) * bytesPerSample
+
+	// 如果数据不足，等待新数据
+	for len(ds.data) < totalBytesNeeded {
+		// 如果没有数据且需要的数据量大于0，等待
+		if len(ds.data) == 0 {
+			ds.cond.Wait()
+		} else {
+			// 有部分数据，先处理这部分
+			break
+		}
 	}
 
-	// 每个样本占用2字节
-	samplesAvailable := available / (s.format.Precision * s.format.NumChannels)
-	if samplesAvailable <= 0 {
-		return 0, false
+	// 计算可以处理的样本数
+	availableSamples := len(ds.data) / bytesPerSample
+	if availableSamples == 0 {
+		return 0, true // 继续等待新数据
 	}
 
 	// 限制样本数不超过请求的数量
-	if samplesAvailable > len(samples) {
-		samplesAvailable = len(samples)
+	if availableSamples > len(samples) {
+		availableSamples = len(samples)
 	}
 
 	// 将PCM数据转换为float64样本
-	for i := 0; i < samplesAvailable; i++ {
+	for i := 0; i < availableSamples; i++ {
 		// 读取16位PCM样本
-		sample := int16(s.data[s.offset]) | int16(s.data[s.offset+1])<<8
-		s.offset += 2
+		sample := int16(ds.data[i*2]) | int16(ds.data[i*2+1])<<8
 
 		// 转换为float64（范围：-1.0到1.0）
 		fSample := float64(sample) / 32768.0
@@ -282,11 +272,15 @@ func (s *PCMStreamer) Stream(samples [][2]float64) (n int, ok bool) {
 		}
 	}
 
-	return samplesAvailable, true
+	// 移除已处理的数据
+	processedBytes := availableSamples * bytesPerSample
+	ds.data = ds.data[processedBytes:]
+
+	return availableSamples, true
 }
 
 // Err 实现beep.Streamer接口
-func (s *PCMStreamer) Err() error {
+func (ds *DynamicStreamer) Err() error {
 	return nil
 }
 
