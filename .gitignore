@@ -11,3 +11,4 @@ xiaozhi-server-go
 config.db
 /ota_bin
 .claude/settings.local.json
+/test/leogo_test

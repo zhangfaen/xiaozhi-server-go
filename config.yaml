@@ -40,7 +40,7 @@ log:
   # 设置控制台输出的日志格式，时间、日志级别、标签、消息
   log_format: "{time:YYYY-MM-DD HH:mm:ss} - {level} - {message}"
   # 设置日志等级：INFO、DEBUG
-  log_level: INFO
+  log_level: DEBUG
   # 设置日志路径
   log_dir: logs
   # 设置日志文件

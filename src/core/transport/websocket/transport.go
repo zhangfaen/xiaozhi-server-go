@@ -39,6 +39,7 @@ func NewWebSocketTransport(config *configs.Config, logger *utils.Logger) *WebSoc
 func (t *WebSocketTransport) Start(ctx context.Context) error {
 	addr := fmt.Sprintf("%s:%d", t.config.Transport.WebSocket.IP, t.config.Transport.WebSocket.Port)
 
+	//将HTTP连接升级为WebSocket连接，并创建相应的连接处理器管理该连接的生命周期
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", t.handleWebSocket)
 
