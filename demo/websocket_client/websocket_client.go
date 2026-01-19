@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"sync"
 	"time"
 
@@ -21,8 +19,11 @@ type WebSocketClient struct {
 	opusDecoder   *opus.OpusDecoder
 	speakerFormat beep.Format
 	dynamicStream *DynamicStreamer
+	recorder      *AudioRecorder // 关联的录音器，用于TTS时暂停/恢复
+	url           string         // 服务器地址
+	deviceID      string         // 设备ID
+	clientID      string         // 客户端ID
 	mu            sync.Mutex
-	done          chan struct{}
 }
 
 // NewWebSocketClient 创建新的WebSocket客户端
@@ -53,34 +54,31 @@ func NewWebSocketClient() *WebSocketClient {
 		opusDecoder:   decoder,
 		speakerFormat: speakerFormat,
 		dynamicStream: dynamicStream,
-		done:          make(chan struct{}),
 	}
+}
+
+// SetRecorder 设置关联的录音器（用于TTS时暂停/恢复录音）
+func (c *WebSocketClient) SetRecorder(recorder *AudioRecorder) {
+	c.recorder = recorder
 }
 
 // Connect 连接到WebSocket服务器
 func (c *WebSocketClient) Connect(url string, deviceID, clientID string) error {
-	// 设置请求头
-	headers := map[string][]string{
-		"Device-Id": []string{deviceID},
-		"Client-Id": []string{clientID},
-	}
+	// 保存连接参数
+	c.url = url
+	c.deviceID = deviceID
+	c.clientID = clientID
 
-	var err error
-	c.conn, _, err = websocket.DefaultDialer.Dial(url, headers)
+	// 建立连接
+	err := c.doConnect()
 	if err != nil {
 		return fmt.Errorf("连接失败: %v", err)
 	}
 
-	// 初始化扬声器
-	err = speaker.Init(c.speakerFormat.SampleRate, c.speakerFormat.SampleRate.N(time.Second/50))
+	// 初始化扬声器，缓冲区 10ms 可降低播放延迟
+	err = speaker.Init(c.speakerFormat.SampleRate, c.speakerFormat.SampleRate.N(time.Second/100))
 	if err != nil {
 		return fmt.Errorf("初始化扬声器失败: %v", err)
-	}
-
-	// 发送hello消息
-	err = c.sendHelloMessage(deviceID, clientID)
-	if err != nil {
-		return fmt.Errorf("发送hello消息失败: %v", err)
 	}
 
 	// 启动持续播放
@@ -89,16 +87,69 @@ func (c *WebSocketClient) Connect(url string, deviceID, clientID string) error {
 	return nil
 }
 
+// isConnected 检查连接是否有效
+func (c *WebSocketClient) isConnected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.conn != nil
+}
+
+// reconnect 尝试重连
+func (c *WebSocketClient) reconnect() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// 关闭旧连接
+	if c.conn != nil {
+		c.conn.Close()
+	}
+
+	log.Println("尝试重连服务器...")
+
+	err := c.doConnect()
+	if err != nil {
+		return err
+	}
+
+	log.Println("重连成功")
+
+	// 重连后重新启动监听
+	go c.StartListening()
+
+	return nil
+}
+
+// doConnect 建立连接（供 Connect 和 reconnect 使用）
+func (c *WebSocketClient) doConnect() error {
+	headers := map[string][]string{
+		"Device-Id": []string{c.deviceID},
+		"Client-Id": []string{c.clientID},
+	}
+
+	var err error
+	c.conn, _, err = websocket.DefaultDialer.Dial(c.url, headers)
+	if err != nil {
+		return err
+	}
+
+	// 发送hello消息
+	err = c.sendHelloMessage(c.deviceID, c.clientID)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // sendHelloMessage 发送hello消息建立连接
 func (c *WebSocketClient) sendHelloMessage(deviceID, clientID string) error {
 	hello := map[string]interface{}{
 		"type": "hello",
-		"data": map[string]interface{}{
-			"device_id":    deviceID,
-			"client_id":    clientID,
-			"version":      "1.0.0",
-			"audio_format": "pcm",
-			"sample_rate":  24000,
+		"audio_params": map[string]interface{}{
+			"format":         "opus",
+			"sample_rate":    24000,
+			"channels":       1,
+			"frame_duration": 60,
 		},
 	}
 
@@ -127,31 +178,61 @@ func (c *WebSocketClient) SendTextMessage(text string) error {
 	return c.conn.WriteMessage(websocket.TextMessage, data)
 }
 
+// SendTextMessageToServer 发送文本消息到服务端（用于发送 listen 等控制消息）
+func (c *WebSocketClient) SendTextMessageToServer(msg map[string]interface{}) error {
+	// 检查连接状态
+	if !c.isConnected() {
+		if err := c.reconnect(); err != nil {
+			return err
+		}
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("序列化消息失败: %v", err)
+	}
+	return c.conn.WriteMessage(websocket.TextMessage, data)
+}
+
+// SendAudioMessage 发送音频数据到服务端
+// audioData: Opus 编码的音频数据
+func (c *WebSocketClient) SendAudioMessage(audioData []byte) error {
+	if len(audioData) == 0 {
+		return nil
+	}
+
+	// 检查连接状态
+	if !c.isConnected() {
+		if err := c.reconnect(); err != nil {
+			return err
+		}
+	}
+
+	// 直接发送二进制消息（服务端根据 audio_params 中的 format 判断解码方式）
+	return c.conn.WriteMessage(websocket.BinaryMessage, audioData)
+}
+
 // StartListening 开始监听服务器消息
 func (c *WebSocketClient) StartListening() {
-	defer func() {
-		c.Close()
-	}()
-
+	log.Println("StartListening: 监听线程启动")
 	for {
-		select {
-		case <-c.done:
+		messageType, message, err := c.conn.ReadMessage()
+		if err != nil {
+			log.Printf("读取消息失败: %v", err)
+			// 连接断开，置空连接让主程序检测到
+			c.mu.Lock()
+			c.conn = nil
+			c.mu.Unlock()
 			return
-		default:
-			messageType, message, err := c.conn.ReadMessage()
-			if err != nil {
-				log.Printf("读取消息失败: %v", err)
-				return
-			}
+		}
 
-			switch messageType {
-			case websocket.TextMessage:
-				c.handleTextMessage(message)
-			case websocket.BinaryMessage:
-				c.handleBinaryMessage(message)
-			default:
-				log.Printf("未知消息类型: %d", messageType)
-			}
+		switch messageType {
+		case websocket.TextMessage:
+			c.handleTextMessage(message)
+		case websocket.BinaryMessage:
+			c.handleBinaryMessage(message)
+		default:
+			log.Printf("未知消息类型: %d", messageType)
 		}
 	}
 }
@@ -165,6 +246,38 @@ func (c *WebSocketClient) handleTextMessage(message []byte) {
 		log.Printf("解析文本消息失败: %v", err)
 		return
 	}
+
+	//// 处理 TTS 消息，暂停/恢复录音以防止回声
+	//msgType, ok := msgMap["type"].(string)
+	//if !ok {
+	//	return
+	//}
+	//
+	//switch msgType {
+	//case "tts":
+	//	// 检查 state 字段
+	//	// 特别注意，实际上自动应该是 state，后面加了一个1是我估计的，目的是使下面的判断代码不起作用。
+	//	// 原因目前不需要通过服务器端发送音频数据的状态来控制是否能录音
+	//	state, ok := msgMap["state1"].(string)
+	//	if !ok {
+	//		return
+	//	}
+	//
+	//	if c.recorder == nil {
+	//		return
+	//	}
+	//
+	//	switch state {
+	//	case "start":
+	//		// TTS 开始播放，暂停录音
+	//		fmt.Println("\n[TTS] 开始播放，暂停录音...")
+	//		c.recorder.Pause()
+	//	case "stop":
+	//		// TTS 播放结束，恢复录音
+	//		fmt.Println("\n[TTS] 播放结束，恢复录音...")
+	//		c.recorder.Resume()
+	//	}
+	//}
 }
 
 // handleBinaryMessage 处理二进制消息（音频数据）
@@ -289,8 +402,6 @@ func (c *WebSocketClient) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	close(c.done)
-
 	if c.opusDecoder != nil {
 		c.opusDecoder.Close()
 	}
@@ -303,55 +414,38 @@ func (c *WebSocketClient) Close() {
 }
 
 func main() {
-	// 创建客户端
+	// 连接到服务器
+	url := "ws://localhost:8000"
+	deviceID := "virtual-esp32s3"
+	clientID := "virtual-esp32s3-001"
+
+	// 先创建客户端（不需要连接）
 	client := NewWebSocketClient()
 	defer client.Close()
 
-	// 连接到服务器
-	url := "ws://localhost:8000" // 端口改为8000
-	deviceID := "virtual-esp32s3"
-	clientID := "virtual-esp32s3-001"
+	// 创建并启动录音服务
+	recorder := NewAudioRecorder(client, 24000, 1, false)
+	defer recorder.Shutdown()
+
+	// 将录音器关联到客户端（用于TTS时暂停/恢复）
+	client.SetRecorder(recorder)
+
+	// 启动录音服务（只需启动一次）
+	if err := recorder.Start(); err != nil {
+		log.Fatalf("启动录音服务失败: %v", err)
+	}
 
 	log.Printf("连接到服务器: %s", url)
 	err := client.Connect(url, deviceID, clientID)
 	if err != nil {
-		log.Fatalf("连接失败: %v", err)
+		log.Printf("连接失败: %v，3秒后重连...", err)
+		time.Sleep(3 * time.Second)
 	}
 	log.Println("连接成功")
 
-	// 启动消息监听
+	// 启动消息监听（接收服务端音频，包括TTS消息）
 	go client.StartListening()
 
-	// 发送测试消息
-	client.SendTextMessage("你好，小智，介绍一下你自己？")
-
-	// 读取用户输入并发送消息
-	reader := bufio.NewReader(os.Stdin)
-	log.Println("WebSocket客户端已启动。输入文本消息发送到服务器，输入'exit'退出。")
-
-	for {
-		fmt.Print("> ")
-		text, err := reader.ReadString('\n')
-		if err != nil {
-			log.Printf("读取输入失败: %v", err)
-			continue
-		}
-
-		// 去除换行符
-		text = text[:len(text)-1]
-
-		if text == "exit" {
-			log.Println("退出客户端")
-			return
-		}
-
-		// 发送消息
-		err = client.SendTextMessage(text)
-		if err != nil {
-			log.Printf("发送消息失败: %v", err)
-			continue
-		}
-
-		log.Printf("已发送消息: %s", text)
-	}
+	// 等待用户按 Ctrl+C 退出
+	recorder.WaitForExit()
 }
