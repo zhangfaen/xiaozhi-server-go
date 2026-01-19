@@ -6,7 +6,16 @@
 |------|------|------|
 | WebSocket 入口 | `src/core/transport/websocket/transport.go` | 监听 WebSocket 连接 |
 | 连接处理 | `src/core/connection.go` | `ConnectionHandler` 处理所有客户端交互 |
-| Provider 池 | `src/core/pool/manager.go` | 池化管理 ASR/LLM/TTS Provider |
+| Provider 池 | `src/core/pool/manager.go` | 池化管理 ASR/LLM/TTS/VLLLM/MCP Provider |
+
+## HTTP 管理/API 服务
+
+| 组件 | 文件 | 说明 |
+|------|------|------|
+| HTTP 入口 | `src/main.go` | `StartHttpServer()` 启动 Gin，挂载 `/api` 与静态资源 |
+| Web API | `src/httpsvr/webapi/*` | 管理后台与配置相关 API（挂在 `/api` 下） |
+| OTA 服务 | `src/httpsvr/ota/*` | OTA 相关接口与资源 |
+| Vision 服务 | `src/httpsvr/vision/*` | 视觉相关 HTTP 接口 |
 
 ### 客户端标识获取 (`transport.go:112-127`)
 ```go
@@ -24,11 +33,11 @@ main.go.StartTransportServer()
   → WebSocketTransport.Start()
   → handleWebSocket()
   → DefaultConnectionHandlerFactory.CreateHandler()
-  → ConnectionContextAdapter.Handle(conn)
+  → ConnectionContextAdapter.Handle()
   → ConnectionHandler.Handle(conn)
 ```
 
-> **注意**: `ConnectionContextAdapter` 是连接适配层，负责将 `WebSocketConnection` 转换为统一的 `Connection` 接口。
+> **注意**：`ConnectionContextAdapter` 的主要职责是封装连接生命周期（context/cancel、重复 Close 保护、归还 ProviderSet 到池等），并把 `transport.Connection` 转交给 `core.ConnectionHandler` 处理。它并不负责“把 WebSocketConnection 转成统一接口”（`transport.Connection` 本身就是 `core.Connection` 的别名）。
 
 ### 一个客户端连接后的信息流故事
 
@@ -36,14 +45,19 @@ main.go.StartTransportServer()
 
 1. **连接建立**
    - 用户设备通过 WebSocket 连接到服务器
-   - 服务器从请求头中读取 `Device-Id` 和 `Client-Id`，为此次连接创建唯一的 `sessionID`
-   - 从 Provider 池中获取一组 Provider（ASR/LLM/TTS），绑定到此 ConnectionHandler
+   - WebSocket 连接 ID：来自 `Client-Id`（缺失时回退为连接对象地址字符串）
+   - 会话 ID（`sessionID`）生成规则：
+     - 优先使用请求头 `Session-Id`
+     - 否则若存在 `Device-Id`，使用 `device-<deviceID>`（会把 `:` 替换为 `_`）
+     - 否则生成 UUID
+   - 从 Provider 池中获取一组 Provider（ASR/LLM/TTS/VLLLM/MCP），绑定到此连接
 
 2. **音频接收与识别**
-   - 客户端发送 Opus 编码的音频数据
-   - `handleListenMessage()` 接收音频，通过 `opusDecoder` 解码
-   - 解码后的音频发送给 ASR Provider 进行语音识别
-   - ASR 通过回调将识别结果（文本）返回给 ConnectionHandler
+   - 客户端先发送 `hello` 上报音频参数（`audio_params.format` 为 `opus` 或 `pcm`）
+   - 客户端发送二进制音频帧（WebSocket `messageType=2`）
+   - `handleMessage()` 按 `clientAudioFormat` 决定是否用 `opusDecoder` 解码为 PCM，并写入 `clientAudioQueue`（解码失败时会把原始帧数据也写入队列）
+   - `processClientAudioMessagesCoroutine()` 从队列读取 PCM 并调用 `ASR.AddAudio()`
+   - ASR 通过回调 `OnAsrResult()` 将识别结果返回给 `ConnectionHandler`
 
 3. **对话历史记录**
    - ASR 返回的文本作为用户消息，存入 `dialogueManager`
@@ -82,27 +96,34 @@ main.go.StartTransportServer()
 ```go
 type ConnectionHandler struct {
     // 标识相关
-    sessionID     string  // 服务端会话ID
-    deviceID      string  // 设备ID
-    clientId      string  // 客户端ID
-    transportType string  // 传输类型
+    sessionID     string // 会话ID（优先 Session-Id，否则按 Device-Id 派生/UUID）
+    deviceID      string // 设备ID（来自请求头 Device-Id）
+    clientId      string // 客户端ID（来自请求头 Client-Id）
+    transportType string // 传输类型
 
     // 核心组件
-    dialogueManager *dialogue.Manager  // 对话历史管理
-    providers       ProviderSet        // Provider 池（嵌套结构体：asr/llm/tts/vlllm）
-    mcpManager     *mcp.Manager       // MCP 工具管理器
-    functionRegister *function.FunctionRegistry  // 函数注册表
+    dialogueManager   *chat.DialogueManager      // 对话历史管理
+    functionRegister  *function.FunctionRegistry // 函数注册表
+    mcpManager        *mcp.Manager               // MCP 管理器（池化）
+    providers         struct {                   // 来自 ProviderSet 的持有者
+        asr   providers.ASRProvider
+        llm   providers.LLMProvider
+        tts   providers.TTSProvider
+        vlllm *vlllm.Provider
+    }
 
     // 音频相关
-    opusDecoder *opus.Decoder  // Opus 解码器
-    clientAudioFormat    string  // 客户端音频格式
-    clientAudioSampleRate int    // 客户端采样率
+    opusDecoder          *utils.OpusDecoder // Opus 解码器
+    clientAudioFormat    string            // 客户端音频格式（opus/pcm）
+    clientAudioSampleRate int              // 客户端采样率
 
     // 会话相关
-    headers     http.Header     // 请求头
-    agentID     string          // Agent ID
-    enabledTools []string       // 启用的工具列表
+    headers      map[string]string // 请求头（首个值）
+    agentID      uint              // Agent ID
+    enabledTools []string          // 启用的工具列表
 }
+
+```
 
 ## 消息处理 (`connection_handlemsg.go:15-100`)
 
@@ -120,12 +141,12 @@ type ConnectionHandler struct {
 | type | 处理函数 | 用途 |
 |------|----------|------|
 | `hello` | `handleHelloMessage()` | 建立连接时上报客户端音频参数（format/sample_rate/channels/frame_duration） |
-| `chat` | `handleChatMessage()` | 文本聊天 |
+| `chat` | `handleChatMessage()` | 文本聊天（当前实现把“原始文本帧内容”作为文本传入处理） |
 | `listen` | `handleListenMessage()` | 语音识别控制（start/stop/detect） |
 | `abort` | `clientAbortChat()` | 打断当前对话/语音 |
 | `image` | `handleImageMessage()` | 图片消息（携带 url 或 base64 数据） |
-| `vision` | `handleVisionMessage()` | 视觉能力控制（gen_pic/gen_video/read_img） |
-| `iot` | `handleIotMessage()` | 物联网设备状态同步（descriptors/states） |
+| `vision` | `handleVisionMessage()` | 视觉能力控制（目前为占位实现，未执行具体逻辑） |
+| `iot` | `handleIotMessage()` | 物联网设备状态同步（目前仅记录 descriptors/states 日志） |
 | `mcp` | `mcpManager.HandleXiaoZhiMCPMessage()` | MCP 协议工具调用 |
 
 ### listen 子指令 (`state` 字段)
@@ -162,7 +183,7 @@ type ConnectionHandler struct {
 // 如果用户中途说话，立即打断当前播放并处理新内容
 ```
 
-> **注意**: `mode` 字段默认为 `auto`。
+> **注意**：服务端 `clientListenMode` 默认值为 `auto`。但当前实现仅在客户端消息携带 `mode` 字段时才会调用 `ASR.SetListener(h)`，因此建议客户端始终显式携带 `mode` 字段以保证回调绑定。
 
 ### vision 子指令 (`cmd` 字段)
 
@@ -261,13 +282,12 @@ MCP（Model Context Protocol）消息用于工具调用，封装了 JSON-RPC 2.0
     "format": "opus",
     "sample_rate": 24000,
     "channels": 1,
-    "frame_duration": 60,
-    "audio_codec": "opus"
+    "frame_duration": 60
   }
 }
 ```
 
-> **关键字段**：`audio_codec` 表示服务端返回音频使用的编码格式（`opus` 或 `pcm`），客户端需据此解码。
+> **关键字段**：客户端应以 `hello.audio_params.format` 判定后续二进制音频帧（`messageType=2`）的解码方式（`opus` 或 `pcm`）。
 
 #### `tts` 状态消息（完整状态流）
 
@@ -293,6 +313,8 @@ MCP（Model Context Protocol）消息用于工具调用，封装了 JSON-RPC 2.0
 // 全部完成
 {"type": "tts", "state": "stop", "session_id": "abc123", "text": "", "index": 1, "audio_codec": "opus"}
 ```
+
+> **注意**：当前实现中 `tts.audio_codec` 字段固定为 `"opus"`（历史字段），即使服务端实际按 `hello.audio_params.format` 发送 PCM 帧。客户端应以 `hello.audio_params.format` 为准。
 
 #### `llm` 情绪消息
 
@@ -336,10 +358,12 @@ MCP（Model Context Protocol）消息用于工具调用，封装了 JSON-RPC 2.0
         │                                            └── 解析 JSON type 字段分发
         │                                                hello/chat/listen/abort/image/...
         │
-        └── type=2 (BINARY=2) → clientAudioQueue → 音频处理管道
+        └── type=2 (BINARY=2) → handleMessage()
                                     │
-                                    └── opusDecoder 解码 (如果是 opus 格式)
-                                        → ASR Provider 语音识别
+                                    ├── (clientAudioFormat=opus) opusDecoder.Decode() → PCM
+                                    └── (clientAudioFormat=pcm) 直接透传 → PCM
+                                                  │
+                                                  └── clientAudioQueue → ASR.AddAudio()
 ```
 
 ### 消息示例
@@ -406,15 +430,15 @@ h.genResponseByLLM(ctx, h.dialogueManager.GetLLMDialogue(), round)
 
 ### 当前日志格式
 ```
-[2026-01-10 12:00:00.000] [INFO] [source:行号] 消息内容 {key=value}
+[2026-01-10 12:00:00.000] [INFO] [文件名:行号] 消息内容 {key=value}
 ```
 
 **实际输出示例**：
 ```
-[2026-01-11 10:30:45.123] [INFO] [transport.go:128] [WebSocket] [连接建立 abc123] 资源已分配 {device=dev1}
+[2026-01-11 10:30:45.123] [INFO] [transport.go:146] [WebSocket] [连接建立 abc123] 资源已分配
 ```
 
-> 日志格式包含 `[source:行号]` 组件，用于定位日志输出位置。
+> 日志输出包含 `source` 属性（`文件名:行号`），用于定位日志输出位置。
 
 ### 专用日志方法
 ```go
@@ -436,15 +460,24 @@ src/
 │   │   └── websocket/
 │   │       └── transport.go  # WebSocket 入口
 │   ├── connection.go         # 连接处理核心
+│   ├── chat/                 # 对话历史
+│   ├── mcp/                  # MCP 管理与客户端
 │   ├── pool/
 │   │   └── manager.go        # Provider 池
 │   ├── providers/
 │   │   ├── asr/
 │   │   ├── llm/
 │   │   └── tts/
-│   └── dialogue/
-│       └── manager.go        # 对话历史管理
+│   └── function/             # 函数注册表（供 LLM tools 使用）
 └── configs/
     ├── config.go             # 配置结构
     └── config_default_init.go # 默认配置
+
+src/httpsvr/
+├── webapi/                   # 管理后台/配置 API
+├── ota/                      # OTA
+└── vision/                   # Vision HTTP 服务
+
+src/models/                   # DB Model
+src/task/                     # 任务管理/回调
 ```
