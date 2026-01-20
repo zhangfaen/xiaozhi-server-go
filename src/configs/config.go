@@ -13,7 +13,7 @@ type Config struct {
 	Server struct {
 		IP    string `yaml:"ip" json:"ip"`
 		Port  int    `yaml:"port" json:"port"`
-		Token string `json:"token"`
+		Token string `yaml:"token" json:"token"`
 		Auth  struct {
 			Store struct {
 				Type   string `yaml:"type" json:"type"`     // memory/file/redis
@@ -170,10 +170,6 @@ type VLLMConfig struct {
 	Extra       map[string]interface{} `yaml:",inline"     json:"extra"`       // 额外配置
 }
 
-var (
-	Cfg *Config
-)
-
 func (cfg *Config) ToString() string {
 	data, _ := yaml.Marshal(cfg)
 	return string(data)
@@ -206,9 +202,9 @@ func LoadConfig(dbi ConfigDBInterface) (*Config, string, error) {
 		config.FromString(cfgStr)
 		LoadProvidersFromDB(dbi, config)
 		config = CheckAndModifyConfig(config)
-		Cfg = config
+		StoreCfg(config)
 		if bUseDatabaseCfg {
-			return Cfg, path, nil
+			return config, path, nil
 		}
 	}
 
@@ -234,7 +230,7 @@ func LoadConfig(dbi ConfigDBInterface) (*Config, string, error) {
 		fmt.Println("初始化服务器配置到数据库失败:", err)
 	}
 	config = CheckAndModifyConfig(config)
-	Cfg = config
+	StoreCfg(config)
 	return config, path, nil
 }
 

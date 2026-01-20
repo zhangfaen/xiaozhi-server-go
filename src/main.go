@@ -60,7 +60,7 @@ func LoadConfigAndLogger() (*configs.Config, *utils.Logger, error) {
 	// 初始化数据库连接
 	_, _, err = database.InitDB()
 	if err != nil {
-		fmt.Printf("数据库连接失败: %v\n", err)
+		return nil, nil, fmt.Errorf("数据库连接失败: %w", err)
 	}
 	// 加载配置,默认使用.config.yaml
 	config, configPath, err := configs.LoadConfig(database.GetServerConfigDB())
@@ -128,7 +128,6 @@ func StartTransportServer(
 
 	// 创建连接处理器工厂
 	handlerFactory := transport.NewDefaultConnectionHandlerFactory(
-		config,
 		poolManager,
 		taskMgr,
 		logger,
@@ -213,6 +212,10 @@ func StartHttpServer(
 		ExposeHeaders:    []string{"Content-Length"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
+	}
+	if len(corsConfig.AllowOrigins) == 1 && corsConfig.AllowOrigins[0] == "*" && corsConfig.AllowCredentials {
+		logger.Warn("CORS AllowOrigins=\"*\" 与 AllowCredentials=true 组合不被浏览器支持，已自动关闭 AllowCredentials")
+		corsConfig.AllowCredentials = false
 	}
 	// 应用全局CORS中间件
 	router.Use(cors.New(corsConfig))
