@@ -42,7 +42,7 @@ func NewDefaultInitConfig() *Config {
 	// 设置默认的模块选择（与配置文件完全一致）
 	config.SelectedModule = map[string]string{
 		"ASR":   "DoubaoASR",
-		"TTS":   "EdgeTTS",
+		"TTS":   "DoubaoTTS",
 		"LLM":   "DeepSeekLLM",
 		"VLLLM": "ChatGLMVLLM",
 	}
@@ -59,20 +59,13 @@ func NewDefaultInitConfig() *Config {
 
 	// 设置默认的TTS配置（与配置文件完全一致）
 	config.TTS = map[string]TTSConfig{
-		"EdgeTTS": {
-			Type:      "edge",
-			Voice:     "zh-CN-XiaoxiaoNeural",
+		"DoubaoTTS": {
+			Type:      "doubao",
+			Voice:     "zh_female_sajiaonvyou_moon_bigtts",
 			OutputDir: "tmp/",
-			SupportedVoices: []VoiceInfo{
-				{Name: "zh-CN-XiaoxiaoNeural", DisplayName: "晓晓", Sex: "女", Description: "商务知性风格，音色成熟清晰，适合新闻播报、专业内容朗读"},
-				{Name: "zh-CN-XiaoyiNeural", DisplayName: "晓伊", Sex: "女", Description: "柔和温暖风格，带自然呼吸感，适合故事叙述或客服场景"},
-				{Name: "zh-CN-YunjianNeural", DisplayName: "云健", Sex: "男", Description: "沉稳磁性男声，权威感强，适合男性角色配音或严肃内容"},
-				{Name: "zh-CN-YunxiNeural", DisplayName: "云希", Sex: "男", Description: "年轻活力风格，语速轻快，适合青少年角色或轻松场景"},
-				{Name: "zh-CN-YunxiaNeural", DisplayName: "云夏", Sex: "男", Description: "方言特色（东北腔），幽默接地气，适合娱乐内容"},
-				{Name: "zh-CN-YunyangNeural", DisplayName: "云扬", Sex: "男", Description: "明亮自信风格，中气十足，适合广告宣传或公开演讲"},
-				{Name: "zh-CN-liaoning-XiaobeiNeural", DisplayName: "晓北（辽宁）", Sex: "女", Description: "带东北方言特色，亲切直率，适合地方化内容"},
-				{Name: "zh-CN-shaanxi-XiaoniNeural", DisplayName: "晓妮（陕西）", Sex: "女", Description: "陕西口音风格，质朴热情，适合方言文化场景"},
-			},
+			AppID:     "你的appid",
+			Token:     "你的access_token",
+			Cluster:   "volcano_tts",
 		},
 	}
 

@@ -1,0 +1,43 @@
+# 可选 providers 配置示例（非完整配置文件）
+#
+# 说明：
+# - 本文件仅用于保留“备选 provider”配置片段，方便需要时拷贝到 config.yaml。
+# - 线上/实际运行以 config.yaml 为准；config.yaml 已按 selected_module 精简，只保留当前使用的模块配置。
+#
+
+# LLM 配置示例（可选）
+LLM:
+  ChatGLMLLM:
+    type: openai
+    model_name: glm-4-flash
+    url: https://open.bigmodel.cn/api/paas/v4/
+    api_key: 你的api_key
+  OllamaLLM:
+    type: ollama
+    model_name: qwen3
+    url: http://localhost:11434
+  DoubaoLLM:
+    type: doubao
+    model_name: doubao-seed-1.6-251015
+    url: https://ark.cn-beijing.volces.com/api/v3
+    api_key: 你的api_key
+    thinking: disabled
+    max_tokens: 4000
+
+# VLLLM 配置示例（可选）
+VLLLM:
+  OllamaVLLM:
+    type: ollama
+    model_name: qwen2.5vl
+    url: http://localhost:11434
+    max_tokens: 4096
+    temperature: 0.7
+    top_p: 0.9
+    security:
+      max_file_size: 10485760
+      max_pixels: 16777216
+      max_width: 4096
+      max_height: 4096
+      allowed_formats: ["jpeg", "jpg", "png", "webp", "gif"]
+      enable_deep_scan: true
+      validation_timeout: 10s

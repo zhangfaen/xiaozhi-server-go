@@ -182,18 +182,6 @@ func (h *ConnectionHandler) mcp_handler_change_role(args interface{}) string {
 		h.logger.Info("mcp_handler_change_role: %s", role)
 		h.dialogueManager.SetSystemMessage(prompt)
 		h.dialogueManager.KeepRecentMessages(5) // 保留最近5条消息
-		if getter, ok := h.providers.tts.(ttsConfigGetter); ok {
-			ttsProvider := getter.Config().Type
-			if ttsProvider == "edge" {
-				if role == "陕西女友" {
-					h.providers.tts.SetVoice("zh-CN-shaanxi-XiaoniNeural") // 陕西女友音色
-				} else if role == "英语老师" {
-					h.providers.tts.SetVoice("zh-CN-XiaoyiNeural") // 英语老师音色
-				} else if role == "好奇小男孩" {
-					h.providers.tts.SetVoice("zh-CN-YunxiNeural") // 好奇小男孩音色
-				}
-			}
-		}
 		h.SystemSpeak("已切换到新角色 " + role)
 		return "切换角色成功: " + role
 	} else {
