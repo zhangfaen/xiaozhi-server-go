@@ -29,8 +29,6 @@ import (
 	"xiaozhi-server-go/src/httpsvr/vision"
 	"xiaozhi-server-go/src/task"
 
-	_ "xiaozhi-server-go/src/docs"
-
 	cfg "xiaozhi-server-go/src/httpsvr/webapi"
 
 	"github.com/gin-contrib/cors"
@@ -40,18 +38,11 @@ import (
 	ginSwagger "github.com/swaggo/gin-swagger"
 
 	// 导入所有providers以确保init函数被调用
-	_ "xiaozhi-server-go/src/core/providers/asr/deepgram"
 	_ "xiaozhi-server-go/src/core/providers/asr/doubao"
-	_ "xiaozhi-server-go/src/core/providers/asr/gosherpa"
-	_ "xiaozhi-server-go/src/core/providers/asr/stepfun"
-	_ "xiaozhi-server-go/src/core/providers/llm/coze"
 	_ "xiaozhi-server-go/src/core/providers/llm/doubao"
 	_ "xiaozhi-server-go/src/core/providers/llm/ollama"
 	_ "xiaozhi-server-go/src/core/providers/llm/openai"
-	_ "xiaozhi-server-go/src/core/providers/tts/deepgram"
 	_ "xiaozhi-server-go/src/core/providers/tts/doubao"
-	_ "xiaozhi-server-go/src/core/providers/tts/edge"
-	_ "xiaozhi-server-go/src/core/providers/tts/gosherpa"
 	_ "xiaozhi-server-go/src/core/providers/vlllm/ollama"
 	_ "xiaozhi-server-go/src/core/providers/vlllm/openai"
 
