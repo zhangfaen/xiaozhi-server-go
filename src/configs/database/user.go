@@ -45,7 +45,11 @@ func InitAdminUser(db *gorm.DB, config *configs.Config) error {
 		// 创建失败
 		return err
 	}
-	fmt.Println("管理员用户初始化成功 admin:123456, 请及时修改密码")
+	if dbLogger != nil {
+		dbLogger.Warn("管理员用户初始化成功 admin:123456, 请及时修改密码")
+	} else {
+		fmt.Println("管理员用户初始化成功 admin:123456, 请及时修改密码")
+	}
 
 	return nil
 }

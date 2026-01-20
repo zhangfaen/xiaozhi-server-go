@@ -1,7 +1,6 @@
 package webapi
 
 import (
-	"fmt"
 	"time"
 	"xiaozhi-server-go/src/configs"
 	"xiaozhi-server-go/src/configs/database"
@@ -22,10 +21,12 @@ var jwtSecret = []byte("xiaozhi_jwt_secret")
 // 通用认证中间件
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		cfg := configs.MustGetCfg()
+
 		apikey := c.GetHeader("AuthorToken")
 		if apikey != "" {
 			// 如果提供了API Token，直接验证
-			if apikey != configs.Cfg.Server.Token {
+			if apikey != cfg.Server.Token {
 				utils.DefaultLogger.Error("无效的API Token %s", apikey)
 			} else {
 				utils.DefaultLogger.Info("API Token验证通过，但未设置OpenID， 校验user_id和username")
@@ -90,14 +91,14 @@ func AdminMiddleware() gin.HandlerFunc {
 		// 假设 user_id 已由认证中间件写入
 		userID, exists := c.Get("user_id")
 		if !exists {
-			fmt.Println("未认证")
+			utils.DefaultLogger.Warn("未认证")
 			c.JSON(401, gin.H{"status": "error", "message": "未认证"})
 			c.Abort()
 			return
 		}
 		user, err := database.GetUserByID(database.GetDB(), userID.(uint))
 		if err != nil || user == nil {
-			fmt.Println("权限不足，未找到用户信息")
+			utils.DefaultLogger.Warn("权限不足，未找到用户信息")
 			c.JSON(403, gin.H{"status": "error", "message": "权限不足"})
 			c.Abort()
 			return
@@ -109,14 +110,14 @@ func AdminMiddleware() gin.HandlerFunc {
 				c.Next()
 				return
 			}
-			fmt.Println("权限不足，必须是管理员或观察员账号（只读）")
+			utils.DefaultLogger.Warn("权限不足，必须是管理员或观察员账号（只读）")
 			c.JSON(403, gin.H{"status": "error", "message": "请使用管理员或观察员账号进行查看操作"})
 			c.Abort()
 			return
 		}
 		// 非 GET 方法仅允许 admin
 		if user.Role != "admin" {
-			fmt.Println("权限不足，必须是管理员账号")
+			utils.DefaultLogger.Warn("权限不足，必须是管理员账号")
 			c.JSON(403, gin.H{"status": "error", "message": "请使用管理员账号进行操作"})
 			c.Abort()
 			return

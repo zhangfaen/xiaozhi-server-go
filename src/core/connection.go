@@ -492,7 +492,6 @@ func (h *ConnectionHandler) SubmitTask(taskType string, params map[string]interf
 	var taskCallback func(result interface{})
 	if h.safeCallbackFunc != nil {
 		taskCallback = func(result interface{}) {
-			fmt.Print("任务完成回调: ")
 			safeCallback := h.safeCallbackFunc(func(handler *ConnectionHandler) {
 				// 处理任务完成逻辑
 				handler.handleTaskComplete(_task, id, result)
