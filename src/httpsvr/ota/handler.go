@@ -62,7 +62,7 @@ func (s *DefaultOTAService) HandleOTARequest() gin.HandlerFunc {
 			c.Status(http.StatusOK)
 			return
 		case http.MethodGet:
-			fmt.Println("OTA interface accessed, websocket address:", s.UpdateURL)
+			utils.DefaultLogger.Info("OTA interface accessed, websocket address: %s", s.UpdateURL)
 			c.String(http.StatusOK, "OTA interface is running, websocket address: "+s.UpdateURL)
 			return
 		case http.MethodPost:
@@ -256,7 +256,7 @@ func (s *DefaultOTAService) handlePostOTA(c *gin.Context) {
 		version = strings.TrimSuffix(latest, ".bin")
 		firmwareURL = "/ota_bin/" + latest
 	}
-	cfg := configs.Cfg
+	cfg := configs.MustGetCfg()
 	updateURL := cfg.Web.Websocket
 	deviceName := req.Board.Name
 	s.CheckAndUpdateDevice(c, cfg, req, deviceID, client_id, deviceName, version)

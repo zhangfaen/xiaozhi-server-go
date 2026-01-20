@@ -145,7 +145,6 @@ func (a *ConnectionContextAdapter) CreateSafeCallback() func(func(*core.Connecti
 
 // DefaultConnectionHandlerFactory 默认连接处理器工厂
 type DefaultConnectionHandlerFactory struct {
-	config      *configs.Config
 	poolManager *pool.PoolManager
 	taskMgr     *task.TaskManager
 	logger      *utils.Logger
@@ -153,13 +152,11 @@ type DefaultConnectionHandlerFactory struct {
 
 // NewDefaultConnectionHandlerFactory 创建默认连接处理器工厂
 func NewDefaultConnectionHandlerFactory(
-	config *configs.Config,
 	poolManager *pool.PoolManager,
 	taskMgr *task.TaskManager,
 	logger *utils.Logger,
 ) *DefaultConnectionHandlerFactory {
 	return &DefaultConnectionHandlerFactory{
-		config:      config,
 		poolManager: poolManager,
 		taskMgr:     taskMgr,
 		logger:      logger,
@@ -171,6 +168,8 @@ func (f *DefaultConnectionHandlerFactory) CreateHandler(
 	conn Connection,
 	req *http.Request,
 ) ConnectionHandler {
+	cfg := configs.MustGetCfg()
+
 	// 从资源池获取提供者集合
 	providerSet, err := f.poolManager.GetProviderSet()
 	if err != nil {
@@ -182,18 +181,18 @@ func (f *DefaultConnectionHandlerFactory) CreateHandler(
 		if mgr := holder.GetMCPManager(); mgr != nil {
 			f.poolManager.ReturnMcpManager(providerSet.MCP)
 			providerSet.MCP = mgr
-			fmt.Println("使用已有的MCPManager创建handler")
+			f.logger.Debug("使用已有的MCPManager创建handler")
 		} else {
-			fmt.Println("连接没有已有的MCPManager")
+			f.logger.Debug("连接没有已有的MCPManager")
 		}
 	} else {
-		fmt.Println("连接没有MCPManagerHolder接口")
+		f.logger.Debug("连接没有MCPManagerHolder接口")
 	}
 
 	// 创建连接上下文适配器
 	adapter := NewConnectionContextAdapter(
 		conn,
-		f.config,
+		cfg,
 		providerSet,
 		f.poolManager,
 		f.taskMgr,

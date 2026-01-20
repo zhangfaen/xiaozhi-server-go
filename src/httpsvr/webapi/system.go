@@ -86,13 +86,20 @@ type SystemConfig struct {
 // @Success 200 {object} map[string]interface{} "系统配置信息"
 // @Router /admin/system [get]
 func (s *DefaultAdminService) handleSystemGet(c *gin.Context) {
+	cfg := configs.MustGetCfg()
+
 	var config SystemConfig
-	config.SelectedASR = configs.Cfg.SelectedModule["ASR"]
-	config.SelectedTTS = configs.Cfg.SelectedModule["TTS"]
-	config.SelectedLLM = configs.Cfg.SelectedModule["LLM"]
-	config.SelectedVLLLM = configs.Cfg.SelectedModule["VLLLM"]
-	config.Prompt = configs.Cfg.DefaultPrompt
-	config.QuickReplyWords = configs.Cfg.QuickReplyWords
+	selected := cfg.SelectedModule
+	if selected == nil {
+		selected = map[string]string{}
+	}
+
+	config.SelectedASR = selected["ASR"]
+	config.SelectedTTS = selected["TTS"]
+	config.SelectedLLM = selected["LLM"]
+	config.SelectedVLLLM = selected["VLLLM"]
+	config.Prompt = cfg.DefaultPrompt
+	config.QuickReplyWords = cfg.QuickReplyWords
 
 	var data map[string]interface{}
 	tmp, _ := json.Marshal(config)
@@ -158,14 +165,26 @@ func (s *DefaultAdminService) handleSystemPost(c *gin.Context) {
 		return
 	}
 
-	configs.Cfg.SelectedModule["ASR"] = config.SelectedASR
-	configs.Cfg.SelectedModule["TTS"] = config.SelectedTTS
-	configs.Cfg.SelectedModule["LLM"] = config.SelectedLLM
-	configs.Cfg.SelectedModule["VLLM"] = config.SelectedVLLLM
-	configs.Cfg.DefaultPrompt = config.Prompt
-	configs.Cfg.QuickReplyWords = config.QuickReplyWords
+	if err := configs.UpdateCfgAndSaveToDB(database.GetServerConfigDB(), func(cfg *configs.Config) error {
+		if cfg.SelectedModule == nil {
+			cfg.SelectedModule = make(map[string]string)
+		}
+		cfg.SelectedModule["ASR"] = config.SelectedASR
+		cfg.SelectedModule["TTS"] = config.SelectedTTS
+		cfg.SelectedModule["LLM"] = config.SelectedLLM
+		cfg.SelectedModule["VLLLM"] = config.SelectedVLLLM
+		cfg.DefaultPrompt = config.Prompt
+		cfg.QuickReplyWords = config.QuickReplyWords
+		return nil
+	}); err != nil {
+		s.logger.Error("保存系统配置失败: %v", err)
+		c.JSON(500, gin.H{
+			"status":  "error",
+			"message": "System configuration save failed",
+		})
+		return
+	}
 
-	configs.Cfg.SaveToDB(database.GetServerConfigDB())
 	c.JSON(200, gin.H{
 		"status":  "ok",
 		"message": "System configuration saved successfully",
