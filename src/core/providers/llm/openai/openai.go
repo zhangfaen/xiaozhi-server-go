@@ -3,11 +3,17 @@ package openai
 import (
 	"context"
 	"fmt"
+	"strings"
 	"xiaozhi-server-go/src/core/providers/llm"
 	"xiaozhi-server-go/src/core/types"
 
 	"github.com/sashabaranov/go-openai"
 )
+
+func isInvalidAssistantMessage(msg types.Message) bool {
+	// DeepSeek/OpenAI兼容接口会拒绝 assistant 空 content 且无 tool_calls 的消息
+	return msg.Role == "assistant" && strings.TrimSpace(msg.Content) == "" && len(msg.ToolCalls) == 0
+}
 
 // Provider OpenAI LLM提供者
 type Provider struct {
@@ -64,12 +70,15 @@ func (p *Provider) Response(ctx context.Context, sessionID string, messages []ty
 		defer close(responseChan)
 
 		// 转换消息格式
-		chatMessages := make([]openai.ChatCompletionMessage, len(messages))
-		for i, msg := range messages {
-			chatMessages[i] = openai.ChatCompletionMessage{
+		chatMessages := make([]openai.ChatCompletionMessage, 0, len(messages))
+		for _, msg := range messages {
+			if isInvalidAssistantMessage(msg) {
+				continue
+			}
+			chatMessages = append(chatMessages, openai.ChatCompletionMessage{
 				Role:    msg.Role,
 				Content: msg.Content,
-			}
+			})
 		}
 
 		stream, err := p.client.CreateChatCompletionStream(
@@ -117,8 +126,11 @@ func (p *Provider) ResponseWithFunctions(ctx context.Context, sessionID string, 
 		defer close(responseChan)
 
 		// 转换消息格式
-		chatMessages := make([]openai.ChatCompletionMessage, len(messages))
-		for i, msg := range messages {
+		chatMessages := make([]openai.ChatCompletionMessage, 0, len(messages))
+		for _, msg := range messages {
+			if isInvalidAssistantMessage(msg) {
+				continue
+			}
 			chatMessage := openai.ChatCompletionMessage{
 				Role:    msg.Role,
 				Content: msg.Content,
@@ -145,7 +157,7 @@ func (p *Provider) ResponseWithFunctions(ctx context.Context, sessionID string, 
 				chatMessage.ToolCalls = openaiToolCalls
 			}
 
-			chatMessages[i] = chatMessage
+			chatMessages = append(chatMessages, chatMessage)
 		}
 
 		stream, err := p.client.CreateChatCompletionStream(

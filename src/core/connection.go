@@ -964,10 +964,10 @@ func (h *ConnectionHandler) genResponseByLLM(ctx context.Context, messages []pro
 	}
 
 	// 分析回复并发送相应的情绪
-	content := utils.JoinStrings(responseMessage)
+	content := strings.TrimSpace(utils.JoinStrings(responseMessage))
 
 	// 添加助手回复到对话历史
-	if !toolCallFlag {
+	if !toolCallFlag && content != "" {
 		h.dialogueManager.Put(chat.Message{
 			Role:    "assistant",
 			Content: content,
